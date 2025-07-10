@@ -1,84 +1,86 @@
 import requests
 from bs4 import BeautifulSoup
-from textblob import TextBlob
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+import torch
 from datetime import datetime
+import numpy as np
 
-# اطلاعات ربات تلگرام برای جفت ارزها
 TELEGRAM_TOKEN = "7880802479:AAHKKofxfO1BdxPUqryLupyhM6N6tafNBt8"
 TELEGRAM_CHAT_ID = "-1002814094030"
 
-# دریافت تیترها از DailyFX (برای شروع)
-def fetch_forex_headlines():
-    url = "https://www.dailyfx.com/news"
-    headers = {"User-Agent": "Mozilla/5.0"}
-    try:
-        response = requests.get(url, headers=headers)
-        soup = BeautifulSoup(response.text, "html.parser")
+# بارگذاری مدل FinBERT
+MODEL_NAME = "yiyanghkust/finbert-tone"
+tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+model = AutoModelForSequenceClassification.from_pretrained(MODEL_NAME)
 
-        articles = soup.select("a.dYFjJe")  # انتخاب تیترها از DailyFX (تغییر در صورت تغییر DOM)
-        headlines = []
-        for a in articles[:5]:
-            title = a.get_text(strip=True)
-            link = a["href"] if a["href"].startswith("http") else f"https://www.dailyfx.com{a['href']}"
-            headlines.append((title, link))
-        return headlines
-    except Exception as e:
-        print("خطا در دریافت تیترها:", e)
-        return []
+LABELS = ['negative', 'neutral', 'positive']
 
-# تحلیل سنتیمنت با TextBlob و تعیین پایداری
+def analyze_sentiment_finbert(text):
+    inputs = tokenizer(text, return_tensors="pt", truncation=True)
+    with torch.no_grad():
+        outputs = model(**inputs)
+    scores = torch.nn.functional.softmax(outputs.logits, dim=1)[0].numpy()
+    top = np.argmax(scores)
+    return LABELS[top], float(scores[top])
 
-def analyze_sentiment(text):
-    blob = TextBlob(text)
-    polarity = blob.sentiment.polarity
-    sentiment = "خنثی ⚪️"
-    if polarity > 0.1:
-        sentiment = "مثبت ✅"
-    elif polarity < -0.1:
-        sentiment = "منفی ❌"
-    return sentiment, polarity
-
-def classify_sentiment_stability(title):
-    keywords_persistent = ["interest rate", "inflation", "central bank", "ECB", "FED", "GDP"]
-    for word in keywords_persistent:
-        if word.lower() in title.lower():
+def classify_stability(title):
+    keywords = ["interest", "inflation", "central bank", "rate hike", "FED", "ECB", "GDP"]
+    for kw in keywords:
+        if kw.lower() in title.lower():
             return "پایدار 🧭"
     return "موقتی ⏱"
 
-# ارسال پیام به تلگرام
+def get_investing_headlines():
+    url = "https://www.investing.com/news/forex-news"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    r = requests.get(url, headers=headers)
+    soup = BeautifulSoup(r.content, "html.parser")
+    return [(a.get_text(strip=True), "https://www.investing.com" + a["href"]) 
+            for a in soup.select(".largeTitle a.title")][:5]
+
+def get_reuters_headlines():
+    url = "https://www.reuters.com/markets/currencies/"
+    r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
+    soup = BeautifulSoup(r.content, "html.parser")
+    return [(a.get_text(strip=True), "https://www.reuters.com" + a["href"]) 
+            for a in soup.select("a[data-testid='Heading']")][:5]
+
+def get_forexfactory_headlines():
+    url = "https://www.forexfactory.com/news"
+    r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
+    soup = BeautifulSoup(r.content, "html.parser")
+    return [(a.get_text(strip=True), "https://www.forexfactory.com" + a["href"]) 
+            for a in soup.select(".title a")][:3]
+
+def get_all_headlines():
+    return get_investing_headlines() + get_reuters_headlines() + get_forexfactory_headlines()
+
 def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message,
-        "parse_mode": "HTML"
-    }
-    try:
-        requests.post(url, data=payload)
-    except Exception as e:
-        print("خطا در ارسال پیام تلگرام:", e)
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
+    requests.post(url, data=payload)
 
-# اجرای برنامه اصلی
 def main():
-    headlines = fetch_forex_headlines()
+    headlines = get_all_headlines()
     if not headlines:
-        send_telegram_message("⛔️ هیچ تیتر خبری برای جفت‌ارزها یافت نشد.")
+        send_telegram_message("⛔️ هیچ تیتر خبری یافت نشد.")
         return
 
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
-    message = f"📊 <b>تحلیل سنتیمنت جفت‌ارزها</b>\n⏰ {now}\n\n"
+    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    message = f"📊 <b>تحلیل سنتیمنت جفت‌ارزها (با FinBERT)</b>\n⏰ {now}\n\n"
     score = 0
 
     for title, link in headlines:
-        sentiment, polarity = analyze_sentiment(title)
-        stability = classify_sentiment_stability(title)
-        message += f"📰 <b>{title}</b>\n🔗 {link}\n📊 احساس: {sentiment} ({polarity:.2f})\n🧭 نوع سنتیمنت: {stability}\n\n"
-        if sentiment == "مثبت ✅":
+        sentiment, confidence = analyze_sentiment_finbert(title)
+        stability = classify_stability(title)
+        if sentiment == "positive":
             score += 1
-        elif sentiment == "منفی ❌":
+        elif sentiment == "negative":
             score -= 1
 
-    message += f"<b>امتیاز کلی سنتیمنت:</b> {score}\n\n📡 سیستم تحلیل جفت‌ارز | بروزرسانی خودکار"
+        message += f"📰 <b>{title}</b>\n🔗 {link}\n📊 احساس: {sentiment} ({confidence:.2f})\n🧭 نوع سنتیمنت: {stability}\n\n"
+
+    message += f"<b>امتیاز کلی سنتیمنت:</b> {score}\n\n📡 تحلیل اتوماتیک | بروزرسانی هر 2 ساعت"
     send_telegram_message(message)
 
 if __name__ == "__main__":
