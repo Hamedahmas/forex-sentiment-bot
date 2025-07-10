@@ -3,6 +3,7 @@ from bs4 import BeautifulSoup
 from transformers import pipeline
 from telegram import Bot
 import xml.etree.ElementTree as ET
+from datetime import datetime
 
 # تنظیمات تلگرام
 TELEGRAM_TOKEN = "7880802479:AAHKKofxfO1BdxPUqryLupyhM6N6tafNBt8"
@@ -31,12 +32,12 @@ def get_investing_forex_headlines():
         return headlines
 
     except Exception as e:
-        print("\u062e\u0637\u0627 \u062f\u0631 \u062f\u0631\u06cc\u0627\u0641\u062a RSS Investing:", e)
+        print("خطا در دریافت RSS Investing:", e)
         return []
 
 def analyze_sentiment(text):
     try:
-        result = sentiment_pipeline(text)[0]  # {'label': 'positive', 'score': 0.98}
+        result = sentiment_pipeline(text)[0]
         label = result['label'].lower()
         if label == "positive":
             return "مثبت ✅"
@@ -47,33 +48,65 @@ def analyze_sentiment(text):
     except Exception as e:
         return "نامشخص ❓"
 
+def classify_sentiment_type(title):
+    stable_keywords = ["interest rate", "inflation", "central bank", "monetary policy", "GDP", "unemployment", "ECB", "Fed", "BOJ"]
+    for keyword in stable_keywords:
+        if keyword.lower() in title.lower():
+            return "پایدار 🟩"
+    return "موقتی 🟨"
+
+def extract_currency_pairs(title):
+    pairs = {
+        "EUR/USD": ["euro", "eur", "ecb"],
+        "USD/JPY": ["yen", "jpy", "boj"],
+        "GBP/USD": ["pound", "gbp", "boe"],
+        "USD/CHF": ["swiss", "franc", "chf"],
+        "AUD/USD": ["australian", "aud", "rba"],
+        "USD/CAD": ["canadian", "cad", "boc"],
+    }
+    result = []
+    for pair, keywords in pairs.items():
+        for word in keywords:
+            if word.lower() in title.lower():
+                direction = "↑ صعودی" if "positive" in title.lower() or "rise" in title.lower() else "↓ نزولی"
+                strength = "تأثیر زیاد" if any(k in title.lower() for k in ["rate", "inflation", "cut", "surge"]) else "تأثیر کم"
+                result.append(f"{pair} → {direction} ({strength})")
+                break
+    return result if result else ["نامشخص"]
+
 def send_telegram_message(message):
     try:
         bot = Bot(token=TELEGRAM_TOKEN)
         bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
     except Exception as e:
-        print("\u062e\u0637\u0627 \u062f\u0631 \u0627\u0631\u0633\u0627\u0644 \u0628\u0647 \u062a\u0644\u06af\u0631\u0627\u0645:", e)
+        print("خطا در ارسال به تلگرام:", e)
 
 def main():
     headlines = get_investing_forex_headlines()
     if not headlines:
-        send_telegram_message("\u26d4\ufe0f \u0647\u06cc\u0686 \u062a\u06cc\u062a\u0631 \u062e\u0628\u0631\u06cc \u06cc\u0627\u0641\u062a \u0646\u0634\u062f.")
+        send_telegram_message("⛔️ هیچ تیتر خبری یافت نشد.")
         return
-
-    message = f"\ud83c\udf10 \u062a\u062d\u0644\u06cc\u0644 \u0633\u0646\u062a\u06cc\u0645\u0646\u062a \u062c\u0641\u062a\u200c\u0627\u0631\u0632\u0647\u0627 \n\n\ud83d\udd22 \u062a\u0639\u062f\u0627\u062f \u0639\u0646\u0627\u0648\u06cc\u0646: {len(headlines)}\n"
-    sentiment_score = 0
 
     for title, link in headlines:
         sentiment = analyze_sentiment(title)
-        message += f"\n\u25b6\ufe0f {title}\n\ud83d\udd17 {link}\n\u2696\ufe0f \u0627\u062d\u0633\u0627\u0633: {sentiment}\n"
+        sentiment_type = classify_sentiment_type(title)
+        pairs = extract_currency_pairs(title)
+        timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
 
-        if sentiment == "مثبت ✅":
-            sentiment_score += 1
-        elif sentiment == "منفی ❌":
-            sentiment_score -= 1
+        message = f"""
+📊 تحلیل جفت‌ارزها (فارکس)
+⏰ {timestamp}
+📰 {title}
+📊 احساس: {sentiment}
+🧭 نوع سنتیمنت: {sentiment_type}
+📈 جفت‌ارزهای تحت‌تأثیر:
 
-    message += f"\n︐ \u0627\u0645\u062a\u06cc\u0627\u0632 \u0633\u0646\u062a\u06cc\u0645\u0646\u062a: {sentiment_score}\n\n\ud83d\udce1 \u0628\u0631\u0648\u0632\u0631\u0633\u0627\u0646\u06cc \u062e\u0648\u062f\u06a9\u0627\u0631 \u0647\u0631 15 \u062f\u0642\u06cc\u0642\u0647"
-    send_telegram_message(message)
+{chr(10).join(pairs)}
+
+🔗 {link}
+📡 تحلیل اتوماتیک هوشمند
+"""
+        send_telegram_message(message)
 
 if __name__ == "__main__":
     main()
