@@ -22,6 +22,7 @@ def get_investing_forex_headlines():
 
         # پیدا کردن تمام بلوک‌های خبر
         blocks = soup.find_all("div", class_="news-analysis-v2_content__z0iLP")
+        print("\u23f3 تعداد بلاک خبری یافت-شده:", len(blocks))
 
         headlines = []
 
@@ -35,6 +36,9 @@ def get_investing_forex_headlines():
             full_link = "https://www.investing.com" + href if href.startswith("/") else href
 
             headlines.append((title, full_link))
+
+        if not headlines:
+            print("❌ هیچ تیتر معتبری پیدا نشد")
 
         return headlines
 
